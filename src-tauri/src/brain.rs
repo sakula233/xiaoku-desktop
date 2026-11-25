@@ -380,11 +380,36 @@ pub async fn run_chat_turn(
     let sys_prompt = build_system_prompt(&settings, db, &prov_stage, can_draw);
     let mut messages = vec![json!({ "role": "system", "content": sys_prompt })];
 
-    for m in db.list_messages(8) {
-        if m.text.trim().is_empty() {
+    // Build strictly alternating, deduplicated recent history so failed/repeated turns never cause echo loops
+    let mut last_role = String::new();
+    let mut last_assistant_reply = String::new();
+    for m in db.list_messages(10) {
+        let t = m.text.trim();
+        if t.is_empty() {
             continue;
         }
-        messages.push(json!({ "role": m.role, "content": m.text }));
+        if m.role == "assistant" {
+            if t == last_assistant_reply {
+                continue;
+            }
+            last_assistant_reply = t.to_string();
+        }
+        if m.role == last_role {
+            // Merge consecutive same-role entries rather than breaking Qwen3 chat template alternation
+            if let Some(prev) = messages.last_mut() {
+                if let Some(prev_str) = prev["content"].as_str() {
+                    let merged = format!("{prev_str}\n{t}");
+                    prev["content"] = json!(merged);
+                }
+            }
+            continue;
+        }
+        last_role = m.role.clone();
+        messages.push(json!({ "role": m.role, "content": t }));
+    }
+    // Ensure history ends on assistant before appending the new user turn
+    if last_role == "user" && messages.len() > 1 {
+        messages.pop();
     }
 
     // Current user turn (supports vision when using cloud + image_data)
@@ -405,13 +430,6 @@ pub async fn run_chat_turn(
         messages.push(json!({ "role": "user", "content": content }));
     }
 
-    // Save user bubble first
-    let _ = db.add_message(
-        "user",
-        if user_text.trim().is_empty() { "（发了一张图片）" } else { user_text },
-        image_data.clone(),
-    );
-
     let enable_tools = !use_local || matches!(local_status.model_tier.as_str(), "8B" | "7B" | "LOCAL");
     let tools = if enable_tools {
         build_tools_schema(can_draw)
@@ -426,14 +444,21 @@ pub async fn run_chat_turn(
     let mut called_tools: Vec<String> = Vec::new();
     let mut generated_drawing: Option<String> = None;
     let mut weather_guard_retried = false;
+    let mut repeat_guard_retried = false;
 
-    for step in 0..4 {
+    for step in 0..5 {
         let mut req_body = json!({
             "model": model_name,
             "messages": messages,
-            "temperature": if use_local { 0.35 } else { 0.65 },
+            "temperature": if repeat_guard_retried { 0.88 } else if use_local { 0.65 } else { 0.7 },
+            "top_p": 0.85,
+            "presence_penalty": if repeat_guard_retried { 1.1 } else { 0.6 },
+            "frequency_penalty": if repeat_guard_retried { 0.9 } else { 0.5 },
             "max_tokens": 420
         });
+        if use_local {
+            req_body["repeat_penalty"] = json!(if repeat_guard_retried { 1.25 } else { 1.15 });
+        }
         if !tools.is_empty() && step < 3 {
             req_body["tools"] = json!(tools);
         }
@@ -504,11 +529,33 @@ pub async fn run_chat_turn(
             }
 
             let cleaned = sanitize_reply(&raw_content, &settings.partner_name);
+            // Anti-repeat circuit breaker: never echo the exact same assistant reply twice in a row
+            if !repeat_guard_retried
+                && !last_assistant_reply.is_empty()
+                && !cleaned.is_empty()
+                && cleaned == last_assistant_reply
+                && step < 4
+            {
+                repeat_guard_retried = true;
+                messages.push(json!({ "role": "assistant", "content": cleaned }));
+                messages.push(json!({
+                    "role": "user",
+                    "content": format!("你刚才已经说过这句一模一样的话了，换句全新的自然口语回应刚才这句：「{}」", user_text)
+                }));
+                continue;
+            }
+
             let final_reply = if cleaned.is_empty() || cleaned == "[NO_REPLY]" {
                 "嗯，我在听呢".to_string()
             } else {
                 cleaned
             };
+            // Save user + assistant pair atomically after success so failed calls never corrupt history
+            let _ = db.add_message(
+                "user",
+                if user_text.trim().is_empty() { "（发了一张图片）" } else { user_text },
+                image_data.clone(),
+            );
             let _ = db.add_message("assistant", &final_reply, generated_drawing.clone());
 
             return Ok(ChatOutcome {
@@ -595,6 +642,11 @@ pub async fn run_chat_turn(
     }
 
     let fallback = "刚走神了一下，你再说一遍？".to_string();
+    let _ = db.add_message(
+        "user",
+        if user_text.trim().is_empty() { "（发了一张图片）" } else { user_text },
+        image_data,
+    );
     let _ = db.add_message("assistant", &fallback, generated_drawing.clone());
     Ok(ChatOutcome {
         reply: fallback,
