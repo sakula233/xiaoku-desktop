@@ -33,8 +33,8 @@ impl Default for AppSettings {
             custom_model_path: String::new(),
             api_base_url: "https://openrouter.ai/api/v1".to_string(),
             api_key: String::new(),
-            cloud_model: "google/gemini-2.5-flash".to_string(),
-            image_model: "google/gemini-2.5-flash-image-preview".to_string(),
+            cloud_model: "google/gemini-4-hydrogen".to_string(),
+            image_model: "google/gemini-3-pro-image".to_string(),
             theme: "system".to_string(),
             daily_summary: "刚整理完昨晚的雨声歌单，顺手泡了杯热茶。".to_string(),
             daily_date: Utc::now().format("%Y-%m-%d").to_string(),
@@ -157,8 +157,20 @@ impl CompanionDb {
                         "customModelPath" => s.custom_model_path = pair.1,
                         "apiBaseUrl" => s.api_base_url = pair.1,
                         "apiKey" => s.api_key = pair.1,
-                        "cloudModel" => s.cloud_model = pair.1,
-                        "imageModel" => s.image_model = pair.1,
+                        "cloudModel" => {
+                            s.cloud_model = if pair.1 == "google/gemini-2.5-flash" {
+                                "google/gemini-4-hydrogen".to_string()
+                            } else {
+                                pair.1
+                            };
+                        }
+                        "imageModel" => {
+                            s.image_model = if pair.1 == "google/gemini-2.5-flash-image-preview" {
+                                "google/gemini-3-pro-image".to_string()
+                            } else {
+                                pair.1
+                            };
+                        }
                         "theme" => s.theme = pair.1,
                         "dailySummary" => s.daily_summary = pair.1,
                         "dailyDate" => s.daily_date = pair.1,

@@ -250,8 +250,51 @@ async fn execute_cloud_drawing(
     prompt: &str,
 ) -> Result<String, String> {
     let base = settings.api_base_url.trim_end_matches('/');
-    let url = format!("{base}/chat/completions");
-    let body = json!({
+    let mut last_err = String::new();
+
+    // 1. OpenRouter native /images endpoint (b64_json)
+    if base.contains("openrouter.ai") {
+        let images_url = format!("{base}/images");
+        let images_body = json!({
+            "model": settings.image_model,
+            "prompt": prompt,
+            "resolution": "1K",
+            "aspect_ratio": "1:1",
+            "n": 1
+        });
+        if let Ok(resp) = client
+            .post(&images_url)
+            .bearer_auth(&settings.api_key)
+            .json(&images_body)
+            .timeout(std::time::Duration::from_secs(75))
+            .send()
+            .await
+        {
+            let status = resp.status();
+            if let Ok(v) = resp.json::<Value>().await {
+                if status.is_success() {
+                    if let Some(b64) = v["data"][0]["b64_json"].as_str() {
+                        let clean: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
+                        if !clean.is_empty() {
+                            let mime = v["data"][0]["media_type"].as_str().unwrap_or("image/png");
+                            return Ok(format!("data:{mime};base64,{clean}"));
+                        }
+                    }
+                    if let Some(u) = v["data"][0]["url"].as_str() {
+                        if !u.is_empty() {
+                            return Ok(u.to_string());
+                        }
+                    }
+                } else {
+                    last_err = format!("/images 返回 {status}: {}", v["error"]["message"].as_str().unwrap_or(""));
+                }
+            }
+        }
+    }
+
+    // 2. Fallback: OpenAI-compatible /chat/completions with image modality
+    let chat_url = format!("{base}/chat/completions");
+    let chat_body = json!({
         "model": settings.image_model,
         "modalities": ["image", "text"],
         "messages": [
@@ -259,21 +302,35 @@ async fn execute_cloud_drawing(
         ]
     });
     let resp = client
-        .post(&url)
+        .post(&chat_url)
         .bearer_auth(&settings.api_key)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(60))
+        .json(&chat_body)
+        .timeout(std::time::Duration::from_secs(75))
         .send()
         .await
         .map_err(|e| format!("生图网络请求失败: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!("生图接口返回 {}", resp.status()));
+        let st = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(if last_err.is_empty() {
+            format!("生图接口返回 {st}: {}", txt.chars().take(120).collect::<String>())
+        } else {
+            format!("{last_err}；回退接口返回 {st}")
+        });
     }
     let v: Value = resp.json().await.map_err(|e| format!("生图结果解析失败: {e}"))?;
-    // OpenRouter image modality response shape: choices[0].message.images[0].image_url.url
     if let Some(data_url) = v["choices"][0]["message"]["images"][0]["image_url"]["url"].as_str() {
         return Ok(data_url.to_string());
+    }
+    if let Some(parts) = v["choices"][0]["message"]["content"].as_array() {
+        for p in parts {
+            if let Some(u) = p["image_url"]["url"].as_str().or(p["url"].as_str()) {
+                if u.starts_with("data:image/") || u.starts_with("http") {
+                    return Ok(u.to_string());
+                }
+            }
+        }
     }
     Err("未在云端返回中检测到图片数据".to_string())
 }
@@ -307,7 +364,8 @@ pub async fn run_chat_turn(
         return Err("尚未配置云端 API Key，且本地模型未就绪。请点右上角「···」选择本地 .gguf 模型或填入 API Key。".to_string());
     }
 
-    let can_draw = has_cloud && !use_local;
+    // Allow cloud drawing whenever an API key is configured (works in Hybrid, Cloud, AND Local+Key!)
+    let can_draw = has_cloud;
     let endpoint_url = if use_local {
         format!("{}/chat/completions", local_status.endpoint.trim_end_matches('/'))
     } else {

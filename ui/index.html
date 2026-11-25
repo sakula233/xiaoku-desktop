@@ -226,8 +226,9 @@
 
   .toast {
     position: fixed; left: 50%; bottom: 82px; transform: translateX(-50%);
-    background: rgba(24, 28, 36, 0.9); color: #fff; padding: 7px 14px;
-    border-radius: 999px; font-size: 12px; display: none; z-index: 70;
+    max-width: min(420px, 88vw); line-height: 1.45; word-break: break-word;
+    background: rgba(24, 28, 36, 0.94); color: #fff; padding: 9px 14px;
+    border-radius: 12px; font-size: 12px; display: none; z-index: 70;
   }
   .toast.show { display: block; }
   .lightbox {
@@ -349,7 +350,8 @@
     <div class="byok-box">
       <input class="input" id="apiBaseInput" placeholder="接口地址（默认 OpenRouter）" />
       <input class="input" id="apiKeyInput" type="password" placeholder="API Key（仅保存在你本机）" />
-      <input class="input" id="cloudModelInput" placeholder="云端对话模型" />
+      <input class="input" id="cloudModelInput" placeholder="云端对话模型（如 google/gemini-4-hydrogen）" />
+      <input class="input" id="imageModelInput" placeholder="云端生图模型（如 google/gemini-3-pro-image）" />
       <button class="soft-btn" onclick="saveApiConfig()">保存扩展配置</button>
     </div>
   </details>
@@ -420,6 +422,7 @@ function renderAll(data) {
   document.getElementById('apiBaseInput').value = s.apiBaseUrl || '';
   document.getElementById('apiKeyInput').value = s.apiKey || '';
   document.getElementById('cloudModelInput').value = s.cloudModel || '';
+  document.getElementById('imageModelInput').value = s.imageModel || '';
   document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('active', b.dataset.mode === s.brainMode));
 
   const ready = (s.brainMode === 'cloud-only' && Boolean(s.apiKey)) || ls.online || (s.brainMode === 'hybrid' && Boolean(s.apiKey));
@@ -629,6 +632,7 @@ async function saveApiConfig() {
       apiBaseUrl: document.getElementById('apiBaseInput').value.trim(),
       apiKey: document.getElementById('apiKeyInput').value.trim(),
       cloudModel: document.getElementById('cloudModelInput').value.trim(),
+      imageModel: document.getElementById('imageModelInput').value.trim(),
     }
   });
   renderAll(next);
