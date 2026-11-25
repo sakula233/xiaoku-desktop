@@ -1,0 +1,17 @@
+{
+  "name": "xiaoku-native",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Xiaoku Offline-First Native Desktop Companion (Windows & macOS, Tauri 2)",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "icon": "tauri icon ui/avatar.jpg",
+    "build": "tauri build",
+    "build:win": "tauri build --bundles nsis",
+    "build:mac": "tauri build --bundles dmg"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0"
+  }
+}

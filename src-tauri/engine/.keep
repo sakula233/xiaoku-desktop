@@ -1,0 +1,1 @@
+# Placeholder so Tauri resource glob `engine/*` always resolves locally; CI populates llama-server here.

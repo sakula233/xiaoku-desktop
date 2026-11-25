@@ -1,0 +1,130 @@
+name: Build Xiaoku Native Desktop (Windows .exe & macOS .dmg)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['main']
+    tags: ['v*']
+
+jobs:
+  build-native:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            label: windows-x64
+            tauri_args: '--bundles nsis'
+            llama_pattern: 'bin-win-vulkan-x64.zip'
+          - platform: macos-latest
+            label: macos-arm64
+            tauri_args: '--bundles dmg --target aarch64-apple-darwin'
+            llama_pattern: 'bin-macos-arm64'
+          - platform: macos-latest
+            label: macos-x64
+            tauri_args: '--bundles dmg --target x86_64-apple-darwin'
+            llama_pattern: 'bin-macos-x64'
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.label == 'macos-arm64' && 'aarch64-apple-darwin' || (matrix.label == 'macos-x64' && 'x86_64-apple-darwin' || '') }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Bundle Official llama-server Engine (Windows Vulkan)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ 'User-Agent' = 'xiaoku-desktop-ci' }
+          if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
+          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest' -Headers $headers
+          $asset = $rel.assets | Where-Object { $_.name -like '*bin-win-vulkan-x64*.zip' } | Select-Object -First 1
+          if (-not $asset) { throw 'No Windows Vulkan llama.cpp release asset found' }
+          Write-Host "Downloading $($asset.name)..."
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile llama.zip
+          Expand-Archive -Path llama.zip -DestinationPath llama_tmp -Force
+          New-Item -ItemType Directory -Path src-tauri/engine -Force | Out-Null
+          Get-ChildItem llama_tmp -Recurse -File | Where-Object { $_.Name -eq 'llama-server.exe' -or $_.Extension -eq '.dll' } | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path 'src-tauri/engine' $_.Name) -Force
+          }
+          Remove-Item llama.zip, llama_tmp -Recurse -Force
+          Get-ChildItem src-tauri/engine | Select-Object Name, Length
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bundle Official llama-server Engine (macOS Metal)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATTERN="${{ matrix.llama_pattern }}"
+          URL=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" https://api.github.com/repos/ggml-org/llama.cpp/releases/latest \
+            | python3 -c "import sys,json; pat=sys.argv[1]; assets=json.load(sys.stdin)['assets']; hits=[a['browser_download_url'] for a in assets if pat in a['name'] and (a['name'].endswith('.zip') or a['name'].endswith('.tar.gz'))]; print(hits[0] if hits else '')" "$PATTERN")
+          if [ -z "$URL" ]; then echo "No macOS llama.cpp asset found for $PATTERN"; exit 1; fi
+          echo "Downloading $URL"
+          mkdir -p llama_tmp src-tauri/engine
+          if [[ "$URL" == *.tar.gz ]]; then
+            curl -fsSL "$URL" -o llama.tar.gz
+            tar -xzf llama.tar.gz -C llama_tmp
+          else
+            curl -fsSL "$URL" -o llama.zip
+            unzip -q llama.zip -d llama_tmp
+          fi
+          find llama_tmp -type f \( -name 'llama-server' -o -name '*.dylib' -o -name '*.metal' -o -name '*.metallib' \) -exec cp -f {} src-tauri/engine/ \;
+          chmod +x src-tauri/engine/llama-server
+          rm -rf llama_tmp llama.zip llama.tar.gz
+          ls -lh src-tauri/engine/
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Tauri CLI
+        run: npm install --no-audit --no-fund
+
+      - name: Build Native Installer
+        run: npx tauri build ${{ matrix.tauri_args }}
+
+      - name: Collect Release Assets
+        shell: bash
+        run: |
+          mkdir -p release-out
+          find src-tauri/target -path '*/release/bundle/nsis/*.exe' -exec cp {} release-out/ \; || true
+          find src-tauri/target -path '*/release/bundle/dmg/*.dmg' -exec cp {} release-out/ \; || true
+          ls -lh release-out/
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaoku-${{ matrix.label }}
+          path: release-out/*
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-native
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*

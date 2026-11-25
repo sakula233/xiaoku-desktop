@@ -1,0 +1,28 @@
+[package]
+name = "xiaoku-native"
+version = "1.0.0"
+description = "Xiaoku Offline-First Native Desktop Companion"
+authors = ["Xiaoku Contributors"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+chrono = { version = "0.4", features = ["clock"] }
+regex = "1"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+
+[profile.release]
+opt-level = 2
+codegen-units = 16
+lto = false
+strip = false
