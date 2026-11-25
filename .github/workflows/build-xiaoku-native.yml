@@ -75,15 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           PATTERN="${{ matrix.llama_pattern }}"
-          URL=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=15" \
-            | python3 -c "import sys,json; pat=sys.argv[1]; rels=json.load(sys.stdin); url='';
-for r in rels:
-    for a in r.get('assets',[]):
-        n=a.get('name','')
-        if pat in n and (n.endswith('.tar.gz') or n.endswith('.zip')):
-            url=a['browser_download_url']; break
-    if url: break
-print(url)" "$PATTERN")
+          URL=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=15" | python3 -c 'import sys, json; pat = sys.argv[1]; rels = json.load(sys.stdin); hits = [a["browser_download_url"] for r in rels for a in r.get("assets", []) if pat in a.get("name", "") and (a["name"].endswith(".tar.gz") or a["name"].endswith(".zip"))]; print(hits[0] if hits else "")' "$PATTERN")
           if [ -z "$URL" ]; then echo "No macOS llama.cpp asset found for $PATTERN"; exit 1; fi
           echo "Downloading $URL"
           mkdir -p llama_tmp src-tauri/engine
