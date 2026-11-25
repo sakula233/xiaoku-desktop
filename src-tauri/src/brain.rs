@@ -17,8 +17,8 @@ pub struct ChatOutcome {
 }
 
 fn detect_provocation(text: &str) -> (&'static str, i64) {
-    let strong = Regex::new(r"(?i)(傻逼|煞笔|沙比|草泥马|操你|妈的|他妈|你妈|滚蛋|滚远点|去死|废物|垃圾|蠢货|智障|脑残|白痴|有病|滚犊子|贱|狗东西|臭傻|fuck|shit|bitch|idiot|stupid)").unwrap();
-    let mild = Regex::new(r"(?i)(破ai|破机器|人工智障|闭嘴|少废话|装什么|真烦|晦气|脑子进水|顶嘴|欠骂|别逼逼)").unwrap();
+    let strong = Regex::new(r"(?i)(傻逼|傻b|\bsb\b|煞笔|沙比|弱智|智障|脑残|白痴|蠢货|废物|垃圾|草泥马|操你|妈的|他妈|你妈|滚蛋|滚远点|滚犊子|去死|有病|神经病|贱|狗东西|臭傻|cnm|nmsl|fuck|shit|bitch|idiot|stupid)").unwrap();
+    let mild = Regex::new(r"(?i)(破ai|破机器|人工智障|闭嘴|少废话|装什么|真烦|晦气|脑子进水|顶嘴|欠骂|别逼逼|有毛病|蠢死了)").unwrap();
     if strong.is_match(text) {
         ("strong", 36)
     } else if mild.is_match(text) {
@@ -111,8 +111,22 @@ fn parse_inline_tool_calls(content: &str) -> Vec<(String, String, Value)> {
     out
 }
 
-fn build_system_prompt(settings: &AppSettings, db: &CompanionDb, prov_stage: &str, can_draw: bool) -> String {
+fn build_system_prompt(settings: &AppSettings, db: &CompanionDb, prov_stage: &str, can_draw: bool, need_weather_rule: bool) -> String {
     let name = &settings.partner_name;
+
+    // Provocation turns use a laser-focused persona prompt (zero weather/drawing noise)
+    if prov_stage != "none" {
+        let stage_guide = match prov_stage {
+            "probe" => "对方刚冲你骂了难听的话。绝不讨好、不赔笑脸、不扯无关话题；直接冷脸反问或怼一句（不超过22字）。",
+            "attitude" => "对方连续冲你开骂挑衅。别笑、别讲大道理、不扯无关话题；冷着脸直接顶回去亮明底线（12~28字）。",
+            _ => "对方一再找茬骂脏话，你已经忍无可忍！直接硬气反讽怼回去、嘴硬别怂、绝不讨好、不扯任何无关话题（12~30字）。",
+        };
+        return format!(
+            "你是「{name}」，一个脾气真实、绝不当老好人的男性虚拟朋友。\n【当前脾气与挑衅档位：{prov_stage}（怒气 {}/100）】\n{stage_guide}\n只输出自然短促的口语回击，不打句号，不要加名字前缀。",
+            settings.rage
+        );
+    }
+
     let recent_events = db.search_events("", 8);
     let event_lines: Vec<String> = recent_events
         .iter()
@@ -121,7 +135,11 @@ fn build_system_prompt(settings: &AppSettings, db: &CompanionDb, prov_stage: &st
 
     let mut lines = vec![
         format!("你是「{name}」，用户的本地虚拟朋友（银白短发、粉紫眼、粉色发夹）。像熟人朋友一样随口自然聊天，不当客服、不灌鸡汤、不输出编号列表。"),
-        "【核心铁律】\n- 闲聊短促自然（12~45字，句尾尽量不打机械句号），严禁『您好』『为您查询到』『希望对您有帮助』等客服腔。\n- 每次只回答当前这一条消息问的这一件事，绝不回头重复或自我检讨上一条回复。\n- 只要对方问天气/温度/带伞/冷热，必须先调用 companion_get_weather 查到事实再开口，严禁凭空猜数字。".to_string(),
+        if need_weather_rule {
+            "【核心铁律】\n- 闲聊短促自然（12~45字，句尾尽量不打机械句号），严禁客服套话。\n- 每次只回答当前这一条消息问的这一件事，绝不回头重复上一轮。\n- 问天气/温度/带伞/冷热必须先调用 companion_get_weather 查到事实再开口，严禁凭空猜数字。".to_string()
+        } else {
+            "【核心铁律】\n- 闲聊短促自然（12~45字，句尾尽量不打机械句号），严禁『您好』『为您查询到』『希望对您有帮助』等客服腔。\n- 每次只回答当前这一条消息问的这一件事，绝不回头重复或自我检讨上一条回复。".to_string()
+        },
         format!("【当前状态】心情：{}；今天自己的小事（没问别硬塞）：{}", settings.mood, settings.daily_summary),
     ];
 
@@ -129,16 +147,8 @@ fn build_system_prompt(settings: &AppSettings, db: &CompanionDb, prov_stage: &st
         lines.push(format!("【你记得对方最近几件事（没提到的不要编造）】\n{}", event_lines.join("\n")));
     }
 
-    if prov_stage == "probe" {
-        lines.push("【脾气档位：冷脸反问】对方刚冲你发了冲话/脏话。绝不讨好、不赔笑脸；简短直接反问确认一句（不超过22字）。".to_string());
-    } else if prov_stage == "attitude" {
-        lines.push("【脾气档位：拉脸亮底线】对方连续挑衅或开骂。别笑、别讲大道理；冷脸顶回去亮明底线（不超过28字）。".to_string());
-    } else if prov_stage == "pushback" {
-        lines.push("【脾气档位：直接硬气回怼】对方一再找茬开骂，你已经忍无可忍。直接硬气反讽怼回去，嘴硬别怂，绝不讨好（12~30字）。".to_string());
-    }
-
     if can_draw {
-        lines.push("【画图能力已开启】对方明确要求画一张图时，调用 companion_submit_drawing 生成并自然回复一句。".to_string());
+        lines.push("【画图能力已开启】仅当对方明确要求画一张图时，调用 companion_submit_drawing 生成并自然回复一句。".to_string());
     } else {
         lines.push("【离线状态说明】当前未配置云端画图 Key，画笔不可用。若对方要求画图，不要假装已经画好，用朋友口吻直说现在是离线模式、在右上角设置里填个 Key 就能画了。".to_string());
     }
@@ -377,13 +387,21 @@ pub async fn run_chat_turn(
         settings.cloud_model.clone()
     };
 
-    let sys_prompt = build_system_prompt(&settings, db, &prov_stage, can_draw);
+    let weather_re = Regex::new(r"天气|多少度|几度|气温|冷不冷|热不热|带伞|下雨|下雪|降水|预报").unwrap();
+    let memory_re = Regex::new(r"记住|帮我记|记一下|提醒|计划|会议|日程|安排|之前说|还记得|忘掉|遗忘|忘了|删掉记忆").unwrap();
+    let project_re = Regex::new(r"企划|电台|共创|共同项目|一起策划").unwrap();
+    let draw_re = Regex::new(r"画一张|画个|画幅|帮我画|给我画|自画像|生图|插画|改画风|画出来").unwrap();
+    let ungrounded_weather_re = Regex::new(r"\d+(?:\.\d+)?\s*(?:度|℃|°C)|晴转|小雨|中雨|大雨|阵雨|多云转").unwrap();
+    let is_weather_ask = weather_re.is_match(user_text);
+    let is_provoked = prov_stage != "none";
+
+    let sys_prompt = build_system_prompt(&settings, db, &prov_stage, can_draw, is_weather_ask);
     let mut messages = vec![json!({ "role": "system", "content": sys_prompt })];
 
     // Build strictly alternating, deduplicated recent history so failed/repeated turns never cause echo loops
     let mut last_role = String::new();
     let mut last_assistant_reply = String::new();
-    for m in db.list_messages(10) {
+    for m in db.list_messages(if is_provoked { 4 } else { 10 }) {
         let t = m.text.trim();
         if t.is_empty() {
             continue;
@@ -395,7 +413,6 @@ pub async fn run_chat_turn(
             last_assistant_reply = t.to_string();
         }
         if m.role == last_role {
-            // Merge consecutive same-role entries rather than breaking Qwen3 chat template alternation
             if let Some(prev) = messages.last_mut() {
                 if let Some(prev_str) = prev["content"].as_str() {
                     let merged = format!("{prev_str}\n{t}");
@@ -407,12 +424,11 @@ pub async fn run_chat_turn(
         last_role = m.role.clone();
         messages.push(json!({ "role": m.role, "content": t }));
     }
-    // Ensure history ends on assistant before appending the new user turn
     if last_role == "user" && messages.len() > 1 {
         messages.pop();
     }
 
-    // Current user turn (supports vision when using cloud + image_data)
+    // Current user turn: match the exact trained provocation header when provoked!
     if let (Some(img), false) = (&image_data, use_local) {
         messages.push(json!({
             "role": "user",
@@ -422,7 +438,9 @@ pub async fn run_chat_turn(
             ]
         }));
     } else {
-        let content = if image_data.is_some() && use_local {
+        let content = if is_provoked {
+            format!("[发言人: 对方 | 挑衅档位: {prov_stage} | 怒气: {}]\n{}", settings.rage, user_text)
+        } else if image_data.is_some() && use_local {
             format!("{}\n（注：对方附带了一张图片，当前纯离线文本模型暂看不到画面，可自然提醒切换云端模式看图）", user_text)
         } else {
             user_text.to_string()
@@ -430,16 +448,27 @@ pub async fn run_chat_turn(
         messages.push(json!({ "role": "user", "content": content }));
     }
 
-    let enable_tools = !use_local || matches!(local_status.model_tier.as_str(), "8B" | "7B" | "LOCAL");
-    let tools = if enable_tools {
+    // Intent-gated tool injection: zero tool JSON bloat on casual banter or provocation turns!
+    let enable_tools = !is_provoked && (!use_local || matches!(local_status.model_tier.as_str(), "8B" | "7B" | "LOCAL"));
+    let tools: Vec<Value> = if !enable_tools {
+        Vec::new()
+    } else if !use_local {
         build_tools_schema(can_draw)
     } else {
-        Vec::new()
+        let all = build_tools_schema(can_draw);
+        let need_mem = memory_re.is_match(user_text);
+        let need_proj = project_re.is_match(user_text);
+        let need_draw = can_draw && draw_re.is_match(user_text);
+        all.into_iter()
+            .filter(|t| {
+                let n = t["function"]["name"].as_str().unwrap_or("");
+                (is_weather_ask && n == "companion_get_weather")
+                    || (need_mem && matches!(n, "companion_recall_events" | "companion_stage_event_update" | "companion_forget_memory"))
+                    || (need_proj && n == "companion_stage_shared_project")
+                    || (need_draw && n == "companion_submit_drawing")
+            })
+            .collect()
     };
-
-    let weather_re = Regex::new(r"天气|多少度|几度|气温|冷不冷|热不热|带伞|下雨|下雪|降水|预报").unwrap();
-    let ungrounded_weather_re = Regex::new(r"\d+(?:\.\d+)?\s*(?:度|℃|°C)|晴转|小雨|中雨|大雨|阵雨|多云转").unwrap();
-    let is_weather_ask = weather_re.is_match(user_text);
 
     let mut called_tools: Vec<String> = Vec::new();
     let mut generated_drawing: Option<String> = None;
